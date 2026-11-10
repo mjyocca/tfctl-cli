@@ -70,9 +70,10 @@ func newConfigurationUploadTransport() *http.Transport {
 	}
 }
 
-// Upload sends archive to capabilityURL. The archive is rewound before each attempt.
-func (u *ConfigurationArchiveUploader) Upload(ctx context.Context, capabilityURL string, archive io.ReadSeeker, size int64) error {
-	parsed, err := url.Parse(capabilityURL)
+// Upload sends archive to target's private capability URL. The archive is
+// rewound before each attempt.
+func (u *ConfigurationArchiveUploader) Upload(ctx context.Context, target CreatedConfigurationVersion, archive io.ReadSeeker, size int64) error {
+	parsed, err := url.Parse(target.uploadURL)
 	if err != nil || !parsed.IsAbs() || parsed.Host == "" || parsed.Scheme != "https" || parsed.User != nil || parsed.Fragment != "" {
 		return fmt.Errorf("configuration archive upload URL is invalid or insecure")
 	}

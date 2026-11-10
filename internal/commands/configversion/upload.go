@@ -29,7 +29,7 @@ import (
 const defaultUploadWaitTimeout = 2 * time.Minute
 
 type configurationArchiveUploader interface {
-	Upload(context.Context, string, io.ReadSeeker, int64) error
+	Upload(context.Context, client.CreatedConfigurationVersion, io.ReadSeeker, int64) error
 }
 
 // UploadResult is the safe, structured output from a configuration upload.
@@ -163,7 +163,7 @@ func NewCmdUpload(inv *cmd.Invocation) *cmd.Command {
 	return c
 }
 
-func runUpload(ctx context.Context, opts UploadOpts) error {
+func runUpload(ctx context.Context, opts UploadOpts) (runErr error) {
 	if opts.APIClient == nil || opts.Output == nil || opts.Pack == nil || opts.Uploader == nil {
 		return errors.New("configuration upload is not initialized")
 	}
@@ -186,7 +186,12 @@ func runUpload(ctx context.Context, opts UploadOpts) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = archive.Close() }()
+	defer func() {
+		closeErr := archive.Close()
+		if closeErr != nil && !errors.Is(runErr, closeErr) {
+			runErr = errors.Join(runErr, closeErr)
+		}
+	}()
 
 	created, err := opts.APIClient.CreateConfigurationVersion(ctx, workspaceID, client.ConfigurationVersionCreateOptions{
 		AutoQueueRuns: opts.AutoQueueRun,
@@ -197,17 +202,9 @@ func runUpload(ctx context.Context, opts UploadOpts) error {
 		return err
 	}
 
-	reader, err := archive.Open()
-	if err != nil {
-		return fmt.Errorf("configuration version %s was created, but its archive could not be opened: %w", created.ID, err)
-	}
-	uploadErr := opts.Uploader.Upload(ctx, created.UploadURL, reader, archive.Metadata.CompressedSize)
-	closeErr := reader.Close()
+	uploadErr := opts.Uploader.Upload(ctx, created, archive.Reader(), archive.Metadata.CompressedSize)
 	if uploadErr != nil {
-		return fmt.Errorf("configuration version %s was created, but its archive upload failed: %w", created.ID, sanitizeCapabilityError(uploadErr, created.UploadURL))
-	}
-	if closeErr != nil {
-		return fmt.Errorf("configuration version %s was uploaded, but the local archive could not be closed: %w", created.ID, closeErr)
+		return fmt.Errorf("configuration version %s was created, but its archive upload failed: %w", created.ID, uploadErr)
 	}
 
 	status := created.Status
@@ -280,9 +277,4 @@ func validateUploadDirectory(directory string) error {
 		return fmt.Errorf("configuration directory %q must be a directory", directory)
 	}
 	return nil
-}
-
-func sanitizeCapabilityError(err error, capabilityURL string) error {
-	message := strings.ReplaceAll(err.Error(), capabilityURL, "[REDACTED]")
-	return errors.New(message)
 }

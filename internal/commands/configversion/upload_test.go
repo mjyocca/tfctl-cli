@@ -58,7 +58,7 @@ func TestRunUpload(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.True(t, uploader.called)
-		assert.Equal(t, "https://upload.example.test/archive?token=CAPABILITY_SECRET", uploader.capabilityURL)
+		assert.Equal(t, "cv-new123", uploader.targetID)
 		assert.Positive(t, uploader.size)
 		assert.Contains(t, ioStreams.Output.String(), "cv-new123")
 		assert.Contains(t, ioStreams.Output.String(), "uploaded")
@@ -157,6 +157,39 @@ func TestRunUpload(t *testing.T) {
 		assert.NotContains(t, err.Error(), "CAPABILITY_SECRET")
 	})
 
+	t.Run("upload cancellation preserves identity and cleanup failure", func(t *testing.T) {
+		t.Parallel()
+		ioStreams := iostreams.Test()
+		server := cmdtest.NewServer(t, cmdtest.RouteMap{
+			"POST /api/v2/workspaces/ws-abc123/configuration-versions": func(w http.ResponseWriter, _ *http.Request) {
+				cmdtest.WriteJSONAPI(w, configurationVersionJSON("cv-new123", "pending", "https://upload.example.test/archive?token=CAPABILITY_SECRET"))
+			},
+		})
+
+		err := runUpload(context.Background(), UploadOpts{
+			IO:        ioStreams,
+			Output:    format.New(ioStreams),
+			APIClient: commandTestClient(t, server.URL),
+			Uploader:  &testUploader{err: context.Canceled, skipRead: true},
+			Pack: func(source string) (*configurationarchive.Archive, error) {
+				archive, err := configurationarchive.Pack(source)
+				if err != nil {
+					return nil, err
+				}
+				file, ok := archive.Reader().(*os.File)
+				require.True(t, ok)
+				require.NoError(t, file.Close())
+				return archive, nil
+			},
+			Workspace: "ws-abc123",
+			Directory: configurationSource(t),
+		})
+		require.ErrorIs(t, err, context.Canceled)
+		require.ErrorContains(t, err, "cv-new123")
+		require.ErrorContains(t, err, "close temporary configuration archive")
+		assert.NotContains(t, err.Error(), "CAPABILITY_SECRET")
+	})
+
 	t.Run("no wait skips polling", func(t *testing.T) {
 		t.Parallel()
 		ioStreams := iostreams.Test()
@@ -181,19 +214,22 @@ func TestRunUpload(t *testing.T) {
 }
 
 type testUploader struct {
-	called        bool
-	capabilityURL string
-	size          int64
-	err           error
+	called   bool
+	targetID string
+	size     int64
+	err      error
+	skipRead bool
 }
 
-func (u *testUploader) Upload(_ context.Context, capabilityURL string, archive io.ReadSeeker, size int64) error {
+func (u *testUploader) Upload(_ context.Context, target client.CreatedConfigurationVersion, archive io.ReadSeeker, size int64) error {
 	u.called = true
-	u.capabilityURL = capabilityURL
+	u.targetID = target.ID
 	u.size = size
-	_, err := io.Copy(io.Discard, archive)
-	if err != nil {
-		return err
+	if !u.skipRead {
+		_, err := io.Copy(io.Discard, archive)
+		if err != nil {
+			return err
+		}
 	}
 	return u.err
 }

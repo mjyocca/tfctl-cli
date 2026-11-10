@@ -50,7 +50,7 @@ func TestCreateConfigurationVersion(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "cv-new123", created.ID)
-	assert.Equal(t, "https://upload.example.test/archive?token=CAPABILITY_SECRET", created.UploadURL)
+	assert.Equal(t, "https://upload.example.test/archive?token=CAPABILITY_SECRET", created.uploadURL)
 }
 
 func TestCreateConfigurationVersionRequiresUploadURL(t *testing.T) {

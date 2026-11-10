@@ -6,7 +6,9 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +20,32 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNewConfigurationArchiveUploaderDoesNotUseDefaultTransport(t *testing.T) {
+	original := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("replacement transport must not be used")
+	})
+	t.Cleanup(func() { http.DefaultTransport = original })
+
+	uploader := NewConfigurationArchiveUploader()
+	_, ok := uploader.httpClient.Transport.(*http.Transport)
+	require.True(t, ok, "capability uploads must use their own standard transport")
+}
+
+func TestCreatedConfigurationVersionDoesNotFormatCapability(t *testing.T) {
+	t.Parallel()
+
+	const secret = "CAPABILITY_SECRET"
+	target := uploadTarget("https://upload.example.test/archive?token=" + secret)
+	encoded, err := json.Marshal(target)
+	require.NoError(t, err)
+
+	assert.NotContains(t, string(encoded), secret)
+	assert.NotContains(t, fmt.Sprintf("%v", target), secret)
+	assert.NotContains(t, fmt.Sprintf("%+v", target), secret)
+	assert.NotContains(t, fmt.Sprintf("%#v", target), secret)
+}
 
 func TestConfigurationArchiveUploader(t *testing.T) {
 	t.Parallel()
@@ -37,7 +65,7 @@ func TestConfigurationArchiveUploader(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	uploader := newTestConfigurationArchiveUploader(server.Client())
-	err := uploader.Upload(context.Background(), server.URL+"/upload?token=CAPABILITY_SECRET", bytes.NewReader(payload), int64(len(payload)))
+	err := uploader.Upload(context.Background(), uploadTarget(server.URL+"/upload?token=CAPABILITY_SECRET"), bytes.NewReader(payload), int64(len(payload)))
 	require.NoError(t, err)
 }
 
@@ -46,7 +74,7 @@ func TestConfigurationArchiveUploaderRejectsUnsafeURL(t *testing.T) {
 
 	uploader := NewConfigurationArchiveUploader()
 	for _, rawURL := range []string{"", "/relative", "http://example.test/upload?token=SECRET"} {
-		err := uploader.Upload(context.Background(), rawURL, bytes.NewReader(nil), 0)
+		err := uploader.Upload(context.Background(), uploadTarget(rawURL), bytes.NewReader(nil), 0)
 		require.Error(t, err)
 		if rawURL != "" {
 			assert.NotContains(t, err.Error(), rawURL)
@@ -71,7 +99,7 @@ func TestConfigurationArchiveUploaderRejectsRedirect(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	uploader := newTestConfigurationArchiveUploader(server.Client())
-	err := uploader.Upload(context.Background(), server.URL+"?token=REDIRECT_SECRET", bytes.NewReader([]byte("body")), 4)
+	err := uploader.Upload(context.Background(), uploadTarget(server.URL+"?token=REDIRECT_SECRET"), bytes.NewReader([]byte("body")), 4)
 	require.ErrorContains(t, err, "redirect")
 	assert.NotContains(t, err.Error(), "REDIRECT_SECRET")
 	assert.False(t, redirected.Load())
@@ -96,7 +124,7 @@ func TestConfigurationArchiveUploaderRetriesReplayableFailure(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	uploader := newTestConfigurationArchiveUploader(server.Client())
-	err := uploader.Upload(context.Background(), server.URL, bytes.NewReader(payload), int64(len(payload)))
+	err := uploader.Upload(context.Background(), uploadTarget(server.URL), bytes.NewReader(payload), int64(len(payload)))
 	require.NoError(t, err)
 	assert.Equal(t, int32(3), attempts.Load())
 }
@@ -113,12 +141,31 @@ func TestConfigurationArchiveUploaderDoesNotRetryPermanentFailure(t *testing.T) 
 
 	secretURL := server.URL + "/upload?token=CAPABILITY_SECRET"
 	uploader := newTestConfigurationArchiveUploader(server.Client())
-	err := uploader.Upload(context.Background(), secretURL, bytes.NewReader([]byte("body")), 4)
+	err := uploader.Upload(context.Background(), uploadTarget(secretURL), bytes.NewReader([]byte("body")), 4)
 	require.ErrorContains(t, err, "403 Forbidden")
 	assert.NotContains(t, err.Error(), secretURL)
 	assert.NotContains(t, err.Error(), "CAPABILITY_SECRET")
 	assert.NotContains(t, err.Error(), "signed token expired")
 	assert.Equal(t, int32(1), attempts.Load())
+}
+
+func TestConfigurationArchiveUploaderUsesLocalStatusText(t *testing.T) {
+	t.Parallel()
+
+	const remoteReason = "CAPABILITY_SECRET"
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusForbidden,
+			Status:     "403 " + remoteReason,
+			Body:       io.NopCloser(strings.NewReader("remote body secret")),
+		}, nil
+	})}
+	uploader := newTestConfigurationArchiveUploader(httpClient)
+
+	err := uploader.Upload(context.Background(), uploadTarget("https://upload.example.test/archive"), bytes.NewReader(nil), 0)
+	require.ErrorContains(t, err, "403 Forbidden")
+	assert.NotContains(t, err.Error(), remoteReason)
+	assert.NotContains(t, err.Error(), "remote body secret")
 }
 
 func TestConfigurationArchiveUploaderSanitizesTransportError(t *testing.T) {
@@ -131,7 +178,7 @@ func TestConfigurationArchiveUploaderSanitizesTransportError(t *testing.T) {
 	uploader := newTestConfigurationArchiveUploader(httpClient)
 	uploader.maxAttempts = 1
 
-	err := uploader.Upload(context.Background(), secretURL, bytes.NewReader(nil), 0)
+	err := uploader.Upload(context.Background(), uploadTarget(secretURL), bytes.NewReader(nil), 0)
 	require.ErrorContains(t, err, "network request failed")
 	assert.NotContains(t, err.Error(), secretURL)
 	assert.NotContains(t, err.Error(), "CAPABILITY_SECRET")
@@ -158,7 +205,7 @@ func TestConfigurationArchiveUploaderHonorsCancellation(t *testing.T) {
 	uploader := newTestConfigurationArchiveUploader(server.Client())
 	done := make(chan error, 1)
 	go func() {
-		done <- uploader.Upload(ctx, server.URL, strings.NewReader("body"), 4)
+		done <- uploader.Upload(ctx, uploadTarget(server.URL), strings.NewReader("body"), 4)
 	}()
 	<-started
 	cancel()
@@ -166,9 +213,30 @@ func TestConfigurationArchiveUploaderHonorsCancellation(t *testing.T) {
 	select {
 	case err := <-done:
 		require.Error(t, err)
+		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(time.Second):
 		t.Fatal("upload did not stop after cancellation")
 	}
+}
+
+func TestConfigurationArchiveUploaderPreservesRetryDeadline(t *testing.T) {
+	t.Parallel()
+
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Body:       io.NopCloser(strings.NewReader("temporary")),
+		}, nil
+	})}
+	uploader := newTestConfigurationArchiveUploader(httpClient)
+	uploader.retryDelay = func(context.Context, int) error { return context.DeadlineExceeded }
+
+	err := uploader.Upload(context.Background(), uploadTarget("https://upload.example.test/archive"), bytes.NewReader(nil), 0)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+func uploadTarget(capabilityURL string) CreatedConfigurationVersion {
+	return CreatedConfigurationVersion{ID: "cv-test", Status: "pending", uploadURL: capabilityURL}
 }
 
 func newTestConfigurationArchiveUploader(httpClient *http.Client) *ConfigurationArchiveUploader {

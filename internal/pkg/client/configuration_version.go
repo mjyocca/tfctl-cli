@@ -20,12 +20,20 @@ type ConfigurationVersionCreateOptions struct {
 	Provisional   bool
 }
 
-// CreatedConfigurationVersion contains the private result needed to upload an archive.
-// UploadURL is a bearer capability and must never enter command output or logs.
+// CreatedConfigurationVersion contains the result needed to upload an archive.
+// The bearer capability remains private to this package.
 type CreatedConfigurationVersion struct {
 	ID        string
-	UploadURL string
 	Status    string
+	uploadURL string
+}
+
+func (v CreatedConfigurationVersion) String() string {
+	return fmt.Sprintf("configuration version %s (%s)", v.ID, v.Status)
+}
+
+func (v CreatedConfigurationVersion) GoString() string {
+	return v.String()
 }
 
 // ConfigurationVersionStatus is the safe status of a configuration version.
@@ -64,7 +72,7 @@ func (c *Client) CreateConfigurationVersion(ctx context.Context, workspaceID str
 	if responseAttrs.GetStatus() != nil {
 		status = responseAttrs.GetStatus().String()
 	}
-	return CreatedConfigurationVersion{ID: id, UploadURL: *responseAttrs.GetUploadUrl(), Status: status}, nil
+	return CreatedConfigurationVersion{ID: id, Status: status, uploadURL: *responseAttrs.GetUploadUrl()}, nil
 }
 
 // ConfigurationVersionStatus reads the current safe status for id.
