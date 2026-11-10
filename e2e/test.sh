@@ -153,7 +153,7 @@ case_profile_display() {
 }
 
 case_create_and_apply_workspace() (
-  local configuration_id workspace_id
+  local configuration_id run_count workspace_id
 
   printf 'Creating auto-apply workspace\n'
   workspace_id="$(create_auto_apply_workspace)"
@@ -164,6 +164,12 @@ case_create_and_apply_workspace() (
     --configuration-version "$configuration_id" \
     --wait \
     --timeout 20m
+
+  run_count="$("$tfctl_bin" api "/workspaces/$workspace_id/runs" --jq '.data | length')"
+  if [ "$run_count" -ne 1 ]; then
+    printf 'expected exactly one run for workspace %s, got %s\n' "$workspace_id" "$run_count" >&2
+    return 1
+  fi
 )
 
 setup
