@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -32,10 +33,9 @@ type ConfigurationArchiveUploader struct {
 
 // NewConfigurationArchiveUploader creates an uploader with secure transport defaults.
 func NewConfigurationArchiveUploader() *ConfigurationArchiveUploader {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
 	return &ConfigurationArchiveUploader{
 		httpClient: &http.Client{
-			Transport: transport,
+			Transport: newConfigurationUploadTransport(),
 			Timeout:   configurationUploadTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return errConfigurationUploadRedirect
@@ -52,6 +52,21 @@ func NewConfigurationArchiveUploader() *ConfigurationArchiveUploader {
 				return nil
 			}
 		},
+	}
+}
+
+func newConfigurationUploadTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: time.Second,
 	}
 }
 
