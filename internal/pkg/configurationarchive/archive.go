@@ -5,10 +5,12 @@
 package configurationarchive
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	slug "github.com/hashicorp/go-slug"
@@ -24,9 +26,16 @@ type Metadata struct {
 // Archive is a private, replayable configuration archive. Call Close to remove it.
 type Archive struct {
 	path      string
+	directory string
 	closeOnce sync.Once
 	closeErr  error
 	Metadata  Metadata
+}
+
+type temporaryArchive struct {
+	file      *os.File
+	path      string
+	directory string
 }
 
 // Pack validates and packages directory into a private temporary archive.
@@ -36,15 +45,13 @@ func Pack(directory string) (*Archive, error) {
 		return nil, err
 	}
 
-	file, err := os.CreateTemp("", "tfctl-configuration-*.tar.gz")
+	temporary, err := createTemporaryArchive(source)
 	if err != nil {
-		return nil, fmt.Errorf("create temporary configuration archive: %w", err)
+		return nil, err
 	}
-	path := file.Name()
-	cleanup := func() {
-		_ = file.Close()
-		_ = os.Remove(path)
-	}
+	file := temporary.file
+	path := temporary.path
+	cleanup := temporary.cleanup
 	if err := file.Chmod(0o600); err != nil {
 		cleanup()
 		return nil, fmt.Errorf("secure temporary configuration archive: %w", err)
@@ -73,12 +80,13 @@ func Pack(directory string) (*Archive, error) {
 		return nil, fmt.Errorf("inspect temporary configuration archive: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+		cleanup()
 		return nil, fmt.Errorf("close temporary configuration archive: %w", err)
 	}
 
 	return &Archive{
-		path: path,
+		path:      path,
+		directory: temporary.directory,
 		Metadata: Metadata{
 			Files:            len(meta.Files),
 			UncompressedSize: meta.Size,
@@ -105,7 +113,101 @@ func validateSource(directory string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("configuration directory %q must be a directory", directory)
 	}
-	return abs, nil
+	realPath, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("resolve configuration directory: %w", err)
+	}
+	return realPath, nil
+}
+
+func createTemporaryArchive(source string) (*temporaryArchive, error) {
+	directories := []string{os.TempDir()}
+	if cacheDirectory, err := os.UserCacheDir(); err == nil {
+		directories = append(directories, cacheDirectory)
+	}
+	directories = append(directories, filepath.Dir(source))
+
+	seen := make(map[string]struct{}, len(directories))
+	var createErrors []error
+	for _, directory := range directories {
+		absoluteDirectory, err := filepath.Abs(directory)
+		if err != nil {
+			createErrors = append(createErrors, fmt.Errorf("resolve temporary directory %q: %w", directory, err))
+			continue
+		}
+		realDirectory, err := filepath.EvalSymlinks(absoluteDirectory)
+		if err != nil {
+			createErrors = append(createErrors, fmt.Errorf("resolve temporary directory %q: %w", directory, err))
+			continue
+		}
+		if _, ok := seen[realDirectory]; ok {
+			continue
+		}
+		seen[realDirectory] = struct{}{}
+
+		withinSource, err := pathWithin(source, realDirectory)
+		if err != nil {
+			createErrors = append(createErrors, fmt.Errorf("check temporary directory %q: %w", realDirectory, err))
+			continue
+		}
+		if withinSource {
+			createErrors = append(createErrors, fmt.Errorf("temporary directory %q is inside the configuration directory", realDirectory))
+			continue
+		}
+
+		stagingDirectory, err := os.MkdirTemp(realDirectory, "tfctl-configuration-*")
+		if err != nil {
+			createErrors = append(createErrors, fmt.Errorf("create private temporary directory in %q: %w", realDirectory, err))
+			continue
+		}
+		if err := os.Chmod(stagingDirectory, 0o700); err != nil {
+			_ = os.Remove(stagingDirectory)
+			createErrors = append(createErrors, fmt.Errorf("secure private temporary directory: %w", err))
+			continue
+		}
+
+		realStagingDirectory, err := filepath.EvalSymlinks(stagingDirectory)
+		if err != nil {
+			_ = os.Remove(stagingDirectory)
+			createErrors = append(createErrors, fmt.Errorf("resolve private temporary directory: %w", err))
+			continue
+		}
+		withinSource, err = pathWithin(source, realStagingDirectory)
+		if err != nil || withinSource {
+			_ = os.Remove(stagingDirectory)
+			if err != nil {
+				createErrors = append(createErrors, fmt.Errorf("check private temporary directory: %w", err))
+			} else {
+				createErrors = append(createErrors, errors.New("private temporary directory resolved inside the configuration directory"))
+			}
+			continue
+		}
+
+		path := filepath.Join(realStagingDirectory, "configuration.tar.gz")
+		file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			_ = os.Remove(realStagingDirectory)
+			createErrors = append(createErrors, fmt.Errorf("create temporary configuration archive: %w", err))
+			continue
+		}
+		return &temporaryArchive{file: file, path: path, directory: realStagingDirectory}, nil
+	}
+
+	return nil, fmt.Errorf("create temporary configuration archive outside the configuration directory: %w", errors.Join(createErrors...))
+}
+
+func pathWithin(root, path string) (bool, error) {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false, err
+	}
+	return relative == "." || relative != ".." && !filepath.IsAbs(relative) && !strings.HasPrefix(relative, ".."+string(filepath.Separator)), nil
+}
+
+func (a *temporaryArchive) cleanup() {
+	_ = a.file.Close()
+	_ = os.Remove(a.path)
+	_ = os.Remove(a.directory)
 }
 
 // Open returns a new reader at the start of the completed archive.
@@ -120,9 +222,14 @@ func (a *Archive) Open() (io.ReadSeekCloser, error) {
 // Close removes the temporary archive. It is safe to call more than once.
 func (a *Archive) Close() error {
 	a.closeOnce.Do(func() {
+		var cleanupErrors []error
 		if err := os.Remove(a.path); err != nil && !os.IsNotExist(err) {
-			a.closeErr = fmt.Errorf("remove temporary configuration archive: %w", err)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove temporary configuration archive: %w", err))
 		}
+		if err := os.Remove(a.directory); err != nil && !os.IsNotExist(err) {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("remove private temporary directory: %w", err))
+		}
+		a.closeErr = errors.Join(cleanupErrors...)
 	})
 	return a.closeErr
 }

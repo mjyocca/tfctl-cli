@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,12 +27,16 @@ func TestPack(t *testing.T) {
 	archive, err := Pack(source)
 	require.NoError(t, err)
 	path := archive.path
+	directory := archive.directory
 	t.Cleanup(func() { _ = archive.Close() })
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	require.NotEqual(t, source, filepath.Dir(path))
+	directoryInfo, err := os.Stat(directory)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o700), directoryInfo.Mode().Perm())
+	require.False(t, testPathWithin(source, path))
 	require.Positive(t, archive.Metadata.CompressedSize)
 	require.Equal(t, int64(len("terraform {}\n")), archive.Metadata.UncompressedSize)
 
@@ -43,7 +48,51 @@ func TestPack(t *testing.T) {
 	require.NoError(t, archive.Close())
 	_, err = os.Stat(path)
 	require.ErrorIs(t, err, os.ErrNotExist)
+	_, err = os.Stat(directory)
+	require.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, archive.Close(), "Close must be idempotent")
+}
+
+func TestPackKeepsTemporaryArchiveOutsideSource(t *testing.T) {
+	source := t.TempDir()
+	tempDirectory := filepath.Join(source, "tmp")
+	require.NoError(t, os.Mkdir(tempDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "main.tf"), []byte("terraform {}\n"), 0o600))
+	t.Setenv("TMPDIR", tempDirectory)
+	t.Setenv("TMP", tempDirectory)
+	t.Setenv("TEMP", tempDirectory)
+
+	archive, err := Pack(source)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = archive.Close() })
+
+	require.False(t, testPathWithin(source, archive.path), "temporary archive must be outside its source")
+	names := archiveNames(t, archive)
+	require.Contains(t, names, "main.tf")
+	for _, name := range names {
+		require.NotContains(t, name, "tfctl-configuration-", "archive must not contain its temporary output")
+	}
+}
+
+func TestPackCleansTemporaryDirectoryAfterFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires additional privileges")
+	}
+
+	temporaryBase := t.TempDir()
+	source := t.TempDir()
+	sentinel := filepath.Join(t.TempDir(), "outside-secret")
+	require.NoError(t, os.WriteFile(sentinel, []byte("must-not-upload"), 0o600))
+	require.NoError(t, os.Symlink(sentinel, filepath.Join(source, "outside")))
+	t.Setenv("TMPDIR", temporaryBase)
+	t.Setenv("TMP", temporaryBase)
+	t.Setenv("TEMP", temporaryBase)
+
+	_, err := Pack(source)
+	require.ErrorContains(t, err, "symlink")
+	entries, err := os.ReadDir(temporaryBase)
+	require.NoError(t, err)
+	require.Empty(t, entries)
 }
 
 func TestPackAppliesTerraformIgnore(t *testing.T) {
@@ -171,4 +220,12 @@ func archiveNames(t *testing.T, archive *Archive) []string {
 		names = append(names, header.Name)
 	}
 	return names
+}
+
+func testPathWithin(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
