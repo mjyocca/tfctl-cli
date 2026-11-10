@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,15 +28,11 @@ func TestPack(t *testing.T) {
 	archive, err := Pack(source)
 	require.NoError(t, err)
 	path := archive.path
-	directory := archive.directory
 	t.Cleanup(func() { _ = archive.Close() })
 
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
-	directoryInfo, err := os.Stat(directory)
-	require.NoError(t, err)
-	require.Equal(t, os.FileMode(0o700), directoryInfo.Mode().Perm())
 	require.False(t, testPathWithin(source, path))
 	require.Positive(t, archive.Metadata.CompressedSize)
 	require.Equal(t, int64(len("terraform {}\n")), archive.Metadata.UncompressedSize)
@@ -47,8 +44,6 @@ func TestPack(t *testing.T) {
 
 	require.NoError(t, archive.Close())
 	_, err = os.Stat(path)
-	require.ErrorIs(t, err, os.ErrNotExist)
-	_, err = os.Stat(directory)
 	require.ErrorIs(t, err, os.ErrNotExist)
 	require.NoError(t, archive.Close(), "Close must be idempotent")
 }
@@ -72,6 +67,105 @@ func TestPackKeepsTemporaryArchiveOutsideSource(t *testing.T) {
 	for _, name := range names {
 		require.NotContains(t, name, "tfctl-configuration-", "archive must not contain its temporary output")
 	}
+}
+
+func TestPhysicallyWithinDetectsCaseAlias(t *testing.T) {
+	parent := t.TempDir()
+	source := filepath.Join(parent, "ConfigurationSource")
+	require.NoError(t, os.Mkdir(source, 0o700))
+	alias := filepath.Join(parent, "configurationsource")
+	if _, err := os.Stat(alias); err != nil {
+		t.Skip("filesystem is case-sensitive")
+	}
+
+	within, err := physicallyWithin(source, alias)
+	require.NoError(t, err)
+	require.True(t, within)
+}
+
+func TestPhysicallyWithinDetectsSameFileAlias(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires additional privileges")
+	}
+	source := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "source-alias")
+	require.NoError(t, os.Symlink(source, alias))
+
+	within, err := physicallyWithin(source, alias)
+	require.NoError(t, err)
+	require.True(t, within)
+}
+
+func TestCreateTemporaryArchiveUsesOnlyCandidates(t *testing.T) {
+	source := t.TempDir()
+	inside := filepath.Join(source, "tmp")
+	require.NoError(t, os.Mkdir(inside, 0o700))
+	missing := filepath.Join(t.TempDir(), "missing")
+	outside := t.TempDir()
+
+	file, path, err := createTemporaryArchiveIn(source, []string{inside, missing, outside})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, cleanupTemporaryArchive(file, path)) })
+	realOutside, err := filepath.EvalSymlinks(outside)
+	require.NoError(t, err)
+	require.Equal(t, realOutside, filepath.Dir(path))
+
+	_, _, err = createTemporaryArchiveIn(source, []string{inside, missing})
+	require.ErrorContains(t, err, "outside the configuration directory")
+	entries, readErr := os.ReadDir(filepath.Dir(source))
+	require.NoError(t, readErr)
+	for _, entry := range entries {
+		require.NotContains(t, entry.Name(), "tfctl-configuration-", "must not fall back to the source parent")
+	}
+}
+
+func TestCreateTemporaryArchiveIsConcurrent(t *testing.T) {
+	source := t.TempDir()
+	temporaryDirectory := t.TempDir()
+	const count = 16
+
+	paths := make(chan string, count)
+	errs := make(chan error, count)
+	var wg sync.WaitGroup
+	for range count {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			file, path, err := createTemporaryArchiveIn(source, []string{temporaryDirectory})
+			if err != nil {
+				errs <- err
+				return
+			}
+			paths <- path
+			errs <- cleanupTemporaryArchive(file, path)
+		}()
+	}
+	wg.Wait()
+	close(paths)
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+	unique := make(map[string]struct{}, count)
+	for path := range paths {
+		unique[path] = struct{}{}
+	}
+	require.Len(t, unique, count)
+}
+
+func TestCleanupTemporaryArchiveJoinsFailures(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "archive-*")
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+
+	nonEmptyDirectory := filepath.Join(t.TempDir(), "not-a-file")
+	require.NoError(t, os.Mkdir(nonEmptyDirectory, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(nonEmptyDirectory, "child"), nil, 0o600))
+
+	err = cleanupTemporaryArchive(file, nonEmptyDirectory)
+	require.ErrorContains(t, err, "close temporary configuration archive")
+	require.ErrorContains(t, err, "remove temporary configuration archive")
 }
 
 func TestPackCleansTemporaryDirectoryAfterFailure(t *testing.T) {
@@ -201,9 +295,9 @@ func TestPackSymlinkContainment(t *testing.T) {
 
 func archiveNames(t *testing.T, archive *Archive) []string {
 	t.Helper()
-	r, err := archive.Open()
+	r := archive.Reader()
+	_, err := r.Seek(0, io.SeekStart)
 	require.NoError(t, err)
-	defer func() { require.NoError(t, r.Close()) }()
 
 	gz, err := gzip.NewReader(r)
 	require.NoError(t, err)
