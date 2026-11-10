@@ -64,6 +64,29 @@ func TestPackAppliesTerraformIgnore(t *testing.T) {
 	require.NotContains(t, names, "ignored.tf")
 }
 
+func TestPackAppliesTerraformIgnoreAcrossUnicodeNormalization(t *testing.T) {
+	t.Parallel()
+
+	const (
+		ignoredPattern = "donn\u00e9es.tf"
+		ignoredFile    = "donne\u0301es.tf"
+	)
+
+	source := t.TempDir()
+	require.NotEqual(t, ignoredPattern, ignoredFile, "test names must use different Unicode forms")
+	require.NoError(t, os.WriteFile(filepath.Join(source, ".terraformignore"), []byte(ignoredPattern+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, ignoredFile), []byte("sensitive"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(source, "included.tf"), []byte("included"), 0o600))
+
+	archive, err := Pack(source)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = archive.Close() })
+
+	names := archiveNames(t, archive)
+	require.Contains(t, names, "included.tf")
+	require.NotContains(t, names, ignoredFile)
+}
+
 func TestPackRejectsInvalidSource(t *testing.T) {
 	t.Parallel()
 
