@@ -64,6 +64,9 @@ func TestPackAppliesTerraformIgnore(t *testing.T) {
 	require.NotContains(t, names, "ignored.tf")
 }
 
+// TestPackAppliesTerraformIgnoreAcrossUnicodeNormalization verifies that the
+// go-slug integration preserves the fix for CVE-2026-14978. Equivalent Unicode
+// names must not bypass .terraformignore exclusions.
 func TestPackAppliesTerraformIgnoreAcrossUnicodeNormalization(t *testing.T) {
 	t.Parallel()
 
