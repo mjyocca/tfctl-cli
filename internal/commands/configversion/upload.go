@@ -1,7 +1,7 @@
 // Copyright IBM Corp. 2026
 // SPDX-License-Identifier: MPL-2.0
 
-package configurationversion
+package configversion
 
 import (
 	"context"
@@ -45,7 +45,7 @@ type UploadResult struct {
 	CompressedSize   int64  `json:"compressed_size"`
 }
 
-// UploadOpts contains the dependencies and values for configuration-version upload.
+// UploadOpts contains the dependencies and values for config-version upload.
 type UploadOpts struct {
 	IO           iostreams.IOStreams
 	Output       *format.Outputter
@@ -64,7 +64,7 @@ type UploadOpts struct {
 	DryRun       bool
 }
 
-// NewCmdUpload creates the `configuration-version upload` command.
+// NewCmdUpload creates the `config-version upload` command.
 func NewCmdUpload(inv *cmd.Invocation) *cmd.Command {
 	opts := UploadOpts{
 		IO:        inv.IO,
@@ -79,7 +79,7 @@ func NewCmdUpload(inv *cmd.Invocation) *cmd.Command {
 		Name:      "upload",
 		ShortHelp: "Package and upload a configuration for a workspace.",
 		LongHelp: heredoc.New(inv.IO, heredoc.WithPreserveNewlines()).Mustf(`
-		The {{ template "mdCodeOrBold" "%s configuration-version upload" }} command packages a
+		The {{ template "mdCodeOrBold" "%s config-version upload" }} command packages a
 		Terraform configuration directory and uploads it to a workspace.
 
 		The command disables automatic run creation by default. Use
@@ -138,11 +138,11 @@ func NewCmdUpload(inv *cmd.Invocation) *cmd.Command {
 		Examples: []cmd.Example{
 			{
 				Preamble: "Upload the current directory to a workspace",
-				Command:  heredoc.New(inv.IO, heredoc.WithNoWrap()).Mustf(`$ %s configuration-version upload my-workspace --organization my-org`, version.Name),
+				Command:  heredoc.New(inv.IO, heredoc.WithNoWrap()).Mustf(`$ %s config-version upload my-workspace --organization my-org`, version.Name),
 			},
 			{
 				Preamble: "Upload a directory and return only its configuration-version ID",
-				Command:  heredoc.New(inv.IO, heredoc.WithNoWrap()).Mustf(`$ %s configuration-version upload ws-abc123 --directory ./production --jq '.id'`, version.Name),
+				Command:  heredoc.New(inv.IO, heredoc.WithNoWrap()).Mustf(`$ %s config-version upload ws-abc123 --directory ./production --jq '.id'`, version.Name),
 			},
 		},
 		RunF: func(_ *cmd.Command, args []string) error {

@@ -1,7 +1,7 @@
 // Copyright IBM Corp. 2026
 // SPDX-License-Identifier: MPL-2.0
 
-package configurationversion
+package configversion
 
 import (
 	"github.com/dustin/go-humanize"

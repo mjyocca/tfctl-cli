@@ -132,10 +132,10 @@ $ tfctl run status example-app-workspace --json
 
 ### Upload a configuration and start a run
 
-Use `configuration-version upload` to package a local Terraform configuration and upload it without exposing the upload capability URL. The command waits for the configuration version to become usable. It does not create a run unless you use `--auto-queue-run`.
+Use `config-version upload` to package a local Terraform configuration and upload it without exposing the upload capability URL. The command waits for the configuration version to become usable. It does not create a run unless you use `--auto-queue-run`.
 
 ```bash
-$ configuration_version_id="$(tfctl configuration-version upload example-app-workspace --directory . --jq '.id')"
+$ configuration_version_id="$(tfctl config-version upload example-app-workspace --directory . --jq '.id')"
 $ tfctl run start example-app-workspace --configuration-version "$configuration_version_id" --wait
 ```
 

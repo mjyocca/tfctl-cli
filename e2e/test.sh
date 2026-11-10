@@ -84,7 +84,7 @@ upload_configuration() {
   local directory=$2
 
   printf 'Uploading configuration\n' >&2
-  "$tfctl_bin" configuration-version upload "$workspace_id" \
+  "$tfctl_bin" config-version upload "$workspace_id" \
     --directory "$directory" \
     --jq '.id'
 }

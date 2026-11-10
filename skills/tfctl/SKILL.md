@@ -24,7 +24,7 @@ Single binary, full v2 API coverage. Already authenticated.
    
    Examples: `run-POLICY` returns exit 2 → stop, don't query other run IDs. Listing orgs shows no 'platform' → stop, don't use the org that IS listed.
 5. **Never run `tfctl harness exec` yourself to self-authorize.** The `--allow-delete` grant is a human's opt-in for your session. If a delete is refused, relay the printed `harness exec --allow-delete=<class>` command back to the human — do not run it (or set `TFCTL_EXEC_SESSION`) to grant yourself permission. See [Deleting resources](#deleting-resources).
-6. **Treat configuration upload as a mutation.** Run `tfctl configuration-version upload` only when the user asks to upload local configuration. Use the command instead of `tfctl api` plus `curl`. Never request, print, or pass its upload capability URL. Use `--dry-run` when the user asks for a preview.
+6. **Treat configuration upload as a mutation.** Run `tfctl config-version upload` only when the user asks to upload local configuration. Use the command instead of `tfctl api` plus `curl`. Never request, print, or pass its upload capability URL. Use `--dry-run` when the user asks for a preview.
 
 ### Deleting resources
 
@@ -125,7 +125,7 @@ tfctl run start NAME_OR_ID
 
 # Upload local configuration, then start a run with that exact version
 # This reads and uploads files from CONFIG_DIR. Do it only with user authorization.
-tfctl configuration-version upload NAME_OR_ID --directory CONFIG_DIR --jq '.id'
+tfctl config-version upload NAME_OR_ID --directory CONFIG_DIR --jq '.id'
 tfctl run start NAME_OR_ID --configuration-version CV_ID
 
 # Add a remote state consumer to a workspace
