@@ -44,10 +44,11 @@ type StartOpts struct {
 
 // CreateOpts defines the options for running a run start, which may be shared with other commands.
 type CreateOpts struct {
-	DebuggingMode   bool
-	Message         string
-	AllowEmptyApply bool
-	PlanOnly        bool
+	DebuggingMode        bool
+	Message              string
+	AllowEmptyApply      bool
+	PlanOnly             bool
+	ConfigurationVersion string
 }
 
 // NewCmdRunStart creates the `run start` command.
@@ -64,7 +65,7 @@ func NewCmdRunStart(inv *cmd.Invocation) *cmd.Command {
 		Name:      "start",
 		ShortHelp: "Start a new run on a workspace.",
 		LongHelp: heredoc.New(inv.IO, heredoc.WithPreserveNewlines()).Mustf(`
-		The {{ template "mdCodeOrBold" "%s run start" }} command creates a new plan and apply run with the most recent configuration. {{ Bold "If auto-apply is enabled and no errors occur, the plan will be automatically applied." }}
+		The {{ template "mdCodeOrBold" "%s run start" }} command creates a new plan and apply run with the most recent configuration. Use {{ template "mdCodeOrBold" "--configuration-version" }} to use an exact configuration version. {{ Bold "If auto-apply is enabled and no errors occur, the plan will be automatically applied." }}
 
 		Use {{ template "mdCodeOrBold" "--plan-only" }} to create a speculative plan-only run that is never applied, regardless of the workspace's auto-apply setting.
 
@@ -109,6 +110,11 @@ func NewCmdRunStart(inv *cmd.Invocation) *cmd.Command {
 					Description:   "Create a speculative plan-only run that is never applied, regardless of the workspace's auto-apply setting.",
 					Value:         flagvalue.Simple(false, &runOpts.PlanOnly),
 					IsBooleanFlag: true,
+				},
+				{
+					Name:        "configuration-version",
+					Description: "Configuration-version ID to use for this run",
+					Value:       flagvalue.Simple("", &runOpts.ConfigurationVersion),
 				},
 				{
 					Name:          "wait",
@@ -176,6 +182,9 @@ func NewCmdRunStart(inv *cmd.Invocation) *cmd.Command {
 func runStart(ctx context.Context, opts StartOpts, runOpts CreateOpts) error {
 	io := opts.IO
 	cs := io.ColorScheme()
+	if runOpts.ConfigurationVersion != "" && (!strings.HasPrefix(runOpts.ConfigurationVersion, "cv-") || len(runOpts.ConfigurationVersion) <= len("cv-")) {
+		return fmt.Errorf("--configuration-version must be a configuration-version ID with the cv- prefix")
+	}
 
 	resolver := client.NewResolver(opts.APIClient, false, opts.DryRun)
 	id := opts.Workspace
@@ -202,6 +211,9 @@ func runStart(ctx context.Context, opts StartOpts, runOpts CreateOpts) error {
 	if opts.DryRun {
 		fmt.Fprintf(opts.IO.Err(), "%s would create run for workspace ID %s\n",
 			cs.DryRunLabel(), *wsID)
+		if runOpts.ConfigurationVersion != "" {
+			fmt.Fprintf(opts.IO.Err(), "%s would use configuration version %s\n", cs.DryRunLabel(), runOpts.ConfigurationVersion)
+		}
 		return nil
 	}
 
@@ -284,6 +296,15 @@ func buildRunsEnvelope(wsID string, ro CreateOpts) *models.RunsEnvelope {
 
 	relationships := models.NewRuns_relationships()
 	relationships.SetWorkspace(workspaceID)
+	if ro.ConfigurationVersion != "" {
+		cvType := models.CONFIGURATIONVERSIONS_CONFIGURATIONVERSIONSIDENTIFIER_TYPE
+		cvData := models.NewConfigurationVersionsHasOne_data()
+		cvData.SetId(&ro.ConfigurationVersion)
+		cvData.SetTypeEscaped(&cvType)
+		cvRelationship := models.NewConfigurationVersionsHasOne()
+		cvRelationship.SetData(cvData)
+		relationships.SetConfigurationVersion(cvRelationship)
+	}
 
 	attributes := models.NewRuns_attributes()
 	attributes.SetMessage(&ro.Message)

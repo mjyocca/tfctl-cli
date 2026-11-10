@@ -53,10 +53,11 @@ func TestRunStart(t *testing.T) {
 			Workspace: "ws-abc123",
 			DryRun:    true,
 			APIClient: c,
-		}, CreateOpts{})
+		}, CreateOpts{ConfigurationVersion: "cv-uploaded123"})
 
 		require.NoError(t, err)
 		assert.Contains(t, io.Error.String(), "would create run for workspace ID ws-abc123")
+		assert.Contains(t, io.Error.String(), "would use configuration version cv-uploaded123")
 	})
 
 	t.Run("dry run with workspace name resolves ID", func(t *testing.T) {
@@ -232,6 +233,11 @@ func TestRunStart(t *testing.T) {
 				assert.Equal(t, true, attrs["debugging-mode"])
 				assert.Equal(t, "test start", attrs["message"])
 				assert.Equal(t, true, attrs["allow-empty-apply"])
+				relationships := data["relationships"].(map[string]any)
+				configurationVersion := relationships["configuration-version"].(map[string]any)
+				configurationVersionData := configurationVersion["data"].(map[string]any)
+				assert.Equal(t, "cv-uploaded123", configurationVersionData["id"])
+				assert.Equal(t, "configuration-versions", configurationVersionData["type"])
 
 				jsonapi(w, map[string]any{
 					"data": map[string]any{
@@ -252,9 +258,10 @@ func TestRunStart(t *testing.T) {
 			Organization: "my-org",
 			DryRun:       false,
 		}, CreateOpts{
-			DebuggingMode:   true,
-			Message:         "test start",
-			AllowEmptyApply: true,
+			DebuggingMode:        true,
+			Message:              "test start",
+			AllowEmptyApply:      true,
+			ConfigurationVersion: "cv-uploaded123",
 		})
 
 		require.NoError(t, err)
@@ -350,6 +357,22 @@ func TestRunStart(t *testing.T) {
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to start run")
+	})
+
+	t.Run("malformed configuration version ID", func(t *testing.T) {
+		t.Parallel()
+		io := iostreams.Test()
+		c := testAPI(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "API must not be called", http.StatusInternalServerError)
+		}))
+
+		err := runStart(context.Background(), StartOpts{
+			IO:        io,
+			APIClient: c,
+			Profile:   profile.TestProfile(t),
+			Workspace: "ws-abc123",
+		}, CreateOpts{ConfigurationVersion: "not-a-cv"})
+		require.ErrorContains(t, err, "configuration-version")
 	})
 }
 
