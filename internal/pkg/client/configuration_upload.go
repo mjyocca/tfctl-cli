@@ -130,13 +130,20 @@ func (u *ConfigurationArchiveUploader) Upload(ctx context.Context, capabilityURL
 		}
 
 		if !retryableUploadStatus(resp.StatusCode) || attempt == attempts {
-			return fmt.Errorf("configuration archive upload failed: server returned %s", resp.Status)
+			return uploadStatusError(resp.StatusCode)
 		}
 		if err := u.waitBeforeRetry(ctx, attempt); err != nil {
 			return fmt.Errorf("configuration archive upload canceled: %w", err)
 		}
 	}
 	return fmt.Errorf("configuration archive upload failed")
+}
+
+func uploadStatusError(statusCode int) error {
+	if text := http.StatusText(statusCode); text != "" {
+		return fmt.Errorf("configuration archive upload failed: server returned %d %s", statusCode, text)
+	}
+	return fmt.Errorf("configuration archive upload failed: server returned status code %d", statusCode)
 }
 
 func (u *ConfigurationArchiveUploader) waitBeforeRetry(ctx context.Context, attempt int) error {
