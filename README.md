@@ -130,6 +130,17 @@ $ tfctl run start example-app-workspace --message="Run started with tfctl."
 $ tfctl run status example-app-workspace --json
 ```
 
+### Upload a configuration and start a run
+
+Use `configuration-version upload` to package a local Terraform configuration and upload it without exposing the upload capability URL. The command waits for the configuration version to become usable. It does not create a run unless you use `--auto-queue-run`.
+
+```bash
+$ configuration_version_id="$(tfctl configuration-version upload example-app-workspace --directory . --jq '.id')"
+$ tfctl run start example-app-workspace --configuration-version "$configuration_version_id" --wait
+```
+
+The upload command uses `.terraformignore` and rejects symbolic links that point outside the configuration directory.
+
 ### Manage profiles
 
 Use the `tfctl profile profiles` command group to create and manage profiles. You can use a different profile for each HCP Terraform organization and each instance of HCP Terraform and instance of Terraform Enterprise.
